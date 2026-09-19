@@ -1,5 +1,6 @@
 package com.yaahua.vcam;
 
+import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraDevice;
@@ -57,6 +58,7 @@ public class Camera2SessionHook {
                 SharedState.c2_preview_Surfcae_1 = null;
                 SharedState.c2_reader_Surfcae_1 = null;
                 SharedState.c2_reader_Surfcae = null;
+                releaseAllYuvWriters();
                 SharedState.c2_preview_Surfcae = null;
                 SharedState.is_first_hook_build = true;
                 SharedState.currentVideoPath = null; // 修复：摄像头重开时清空路径，确保 build() 时重建解码器
@@ -235,6 +237,77 @@ public class Camera2SessionHook {
         return SharedState.c2_virtual_surface;
     }
 
+
+    // ======================== reader target configuration ========================
+
+    /**
+     * Points a decoder at one ImageReader capture target, choosing the producer path from that
+     * reader's <em>own</em> format.
+     *
+     * <ul>
+     *   <li>{@link ImageFormat#JPEG} — unchanged: Surface-mode MediaCodec.</li>
+     *   <li>{@link ImageFormat#YUV_420_888} — decode to NV21 and push CPU-writable planes through
+     *       {@link Yuv420888SurfaceWriter}. Surface-mode output gives this reader opaque gralloc
+     *       buffers it cannot lock, which is what makes Chromium's cr_VideoCapture throw
+     *       IllegalStateException from acquireLatestImage().</li>
+     *   <li>anything else (incl. {@link ImageFormat#NV21}) — unchanged legacy behaviour.</li>
+     * </ul>
+     */
+    static void configureReaderTarget(VideoToFrames decoder, Surface readerSurface, boolean primary) {
+        releaseYuvWriter(primary);
+        if (decoder == null || readerSurface == null) return;
+
+        int format = ReaderSurfaceInfo.formatOf(readerSurface);
+
+        if (format == ImageFormat.YUV_420_888) {
+            int maxImages = ReaderSurfaceInfo.maxImagesOf(readerSurface, 3);
+            // Leave the consumer at least one slot; never hold more than 3 ourselves.
+            int writerImages = Math.max(1, Math.min(3, maxImages - 1));
+            final Yuv420888SurfaceWriter writer = new Yuv420888SurfaceWriter(readerSurface, writerImages);
+            if (writer.open()) {
+                if (primary) SharedState.c2_yuv_writer = writer;
+                else SharedState.c2_yuv_writer_1 = writer;
+                decoder.setFrameSink(writer::writeNv21);
+                decoder.set_surfcae(null);
+                XposedBridge.log("【VCAM】[C2][YUV] reader target using ImageWriter path");
+                return;
+            }
+            // Could not attach a writer — fall through to legacy behaviour rather than
+            // producing nothing at all.
+            XposedBridge.log("【VCAM】[C2][YUV] ImageWriter unavailable, falling back to Surface mode");
+        }
+
+        try {
+            if (format == ImageFormat.JPEG) {
+                decoder.setSaveFrames("null", OutputImageFormat.JPEG);
+            } else {
+                decoder.setSaveFrames("null", OutputImageFormat.NV21);
+            }
+        } catch (IOException e) {
+            XposedBridge.log("【VCAM】" + e);
+        }
+        decoder.set_surfcae(readerSurface);
+    }
+
+    static void releaseYuvWriter(boolean primary) {
+        if (primary) {
+            if (SharedState.c2_yuv_writer != null) {
+                SharedState.c2_yuv_writer.release();
+                SharedState.c2_yuv_writer = null;
+            }
+        } else {
+            if (SharedState.c2_yuv_writer_1 != null) {
+                SharedState.c2_yuv_writer_1.release();
+                SharedState.c2_yuv_writer_1 = null;
+            }
+        }
+    }
+
+    static void releaseAllYuvWriters() {
+        releaseYuvWriter(true);
+        releaseYuvWriter(false);
+    }
+
     // ======================== processCamera2Play ========================
     public static void processCamera2Play() {
         File videoFile = HookGuards.getVideoFile();
@@ -265,12 +338,7 @@ public class Camera2SessionHook {
             }
             SharedState.c2_hw_decode_obj = new VideoToFrames();
             try {
-                if (SharedState.imageReaderFormat == 256) {
-                    SharedState.c2_hw_decode_obj.setSaveFrames("null", OutputImageFormat.JPEG);
-                } else {
-                    SharedState.c2_hw_decode_obj.setSaveFrames("null", OutputImageFormat.NV21);
-                }
-                SharedState.c2_hw_decode_obj.set_surfcae(SharedState.c2_reader_Surfcae);
+                configureReaderTarget(SharedState.c2_hw_decode_obj, SharedState.c2_reader_Surfcae, true);
                 if (resumePos > 0) SharedState.c2_hw_decode_obj.seekTo(resumePos);
                 if (SharedState.playPaused) SharedState.c2_hw_decode_obj.setPaused(true);
                 SharedState.c2_hw_decode_obj.decode(HookGuards.getVideoFile().getAbsolutePath());
@@ -287,12 +355,7 @@ public class Camera2SessionHook {
             }
             SharedState.c2_hw_decode_obj_1 = new VideoToFrames();
             try {
-                if (SharedState.imageReaderFormat == 256) {
-                    SharedState.c2_hw_decode_obj_1.setSaveFrames("null", OutputImageFormat.JPEG);
-                } else {
-                    SharedState.c2_hw_decode_obj_1.setSaveFrames("null", OutputImageFormat.NV21);
-                }
-                SharedState.c2_hw_decode_obj_1.set_surfcae(SharedState.c2_reader_Surfcae_1);
+                configureReaderTarget(SharedState.c2_hw_decode_obj_1, SharedState.c2_reader_Surfcae_1, false);
                 if (resumePos > 0) SharedState.c2_hw_decode_obj_1.seekTo(resumePos);
                 if (SharedState.playPaused) SharedState.c2_hw_decode_obj_1.setPaused(true);
                 SharedState.c2_hw_decode_obj_1.decode(HookGuards.getVideoFile().getAbsolutePath());
@@ -427,12 +490,7 @@ public class Camera2SessionHook {
                     SharedState.c2_hw_decode_obj.stopDecode();
                     SharedState.c2_hw_decode_obj = new VideoToFrames();
                 }
-                if (SharedState.imageReaderFormat == 256) {
-                    SharedState.c2_hw_decode_obj.setSaveFrames("null", OutputImageFormat.JPEG);
-                } else {
-                    SharedState.c2_hw_decode_obj.setSaveFrames("null", OutputImageFormat.NV21);
-                }
-                SharedState.c2_hw_decode_obj.set_surfcae(SharedState.c2_reader_Surfcae);
+                configureReaderTarget(SharedState.c2_hw_decode_obj, SharedState.c2_reader_Surfcae, true);
                 if (resumePos > 0) SharedState.c2_hw_decode_obj.seekTo(resumePos);
                 if (SharedState.playPaused) SharedState.c2_hw_decode_obj.setPaused(true);
                 SharedState.c2_hw_decode_obj.decode(newPath);
@@ -450,12 +508,7 @@ public class Camera2SessionHook {
                     SharedState.c2_hw_decode_obj_1.stopDecode();
                     SharedState.c2_hw_decode_obj_1 = new VideoToFrames();
                 }
-                if (SharedState.imageReaderFormat == 256) {
-                    SharedState.c2_hw_decode_obj_1.setSaveFrames("null", OutputImageFormat.JPEG);
-                } else {
-                    SharedState.c2_hw_decode_obj_1.setSaveFrames("null", OutputImageFormat.NV21);
-                }
-                SharedState.c2_hw_decode_obj_1.set_surfcae(SharedState.c2_reader_Surfcae_1);
+                configureReaderTarget(SharedState.c2_hw_decode_obj_1, SharedState.c2_reader_Surfcae_1, false);
                 if (resumePos > 0) SharedState.c2_hw_decode_obj_1.seekTo(resumePos);
                 if (SharedState.playPaused) SharedState.c2_hw_decode_obj_1.setPaused(true);
                 SharedState.c2_hw_decode_obj_1.decode(newPath);

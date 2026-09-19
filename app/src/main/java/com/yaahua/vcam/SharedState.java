@@ -58,6 +58,9 @@ public class SharedState {
     public static int c2_ori_width = 1280;
     public static int c2_ori_height = 720;
     public static Class c2_state_callback;
+    /** Active YUV_420_888 producers for the two reader targets (null for JPEG/legacy paths). */
+    public static Yuv420888SurfaceWriter c2_yuv_writer;
+    public static Yuv420888SurfaceWriter c2_yuv_writer_1;
 
     // ========== 通用状态 ==========
     public static String video_path = "/storage/emulated/0/DCIM/Camera1/";
