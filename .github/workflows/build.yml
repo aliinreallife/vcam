@@ -2,7 +2,7 @@ name: Build VCAM APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 'fix/**' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
@@ -53,12 +53,30 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Upload unit test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VCAM-Unit-Test-Report
+          path: app/build/reports/tests/
+          if-no-files-found: warn
+
       - name: Build with Gradle
         run: |
           keytool -genkey -v -keystore vcam.keystore -alias vcam -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass vcam123456 -keypass vcam123456 \
             -dname "CN=VCAM, OU=VCAM, O=VCAM, L=Unknown, ST=Unknown, C=CN"
-          ./gradlew assembleRelease --stacktrace
+          ./gradlew assembleDebug assembleRelease --stacktrace
+
+      - name: Upload APK (Debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: VCAM-Debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: warn
 
       - name: Upload APK (Release)
         uses: actions/upload-artifact@v4
