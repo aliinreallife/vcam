@@ -1,5 +1,6 @@
 package com.yaahua.vcam;
 
+import android.annotation.SuppressLint;
 import android.graphics.ImageFormat;
 import android.media.Image;
 import android.media.ImageWriter;
@@ -25,6 +26,7 @@ import de.robv.android.xposed.XposedBridge;
  * <p>This class instead produces real, CPU-writable YUV_420_888 images via {@link ImageWriter},
  * honouring each destination plane's {@code rowStride} and {@code pixelStride}.
  */
+@SuppressLint("NewApi") // ImageWriter is API 23+; guarded at runtime in open().
 public final class Yuv420888SurfaceWriter {
 
     private static final String TAG = "【VCAM】[C2][YUV] ";
@@ -45,6 +47,10 @@ public final class Yuv420888SurfaceWriter {
     public synchronized boolean open() {
         if (released) return false;
         if (writer != null) return true;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            XposedBridge.log(TAG + "ImageWriter requires API 23, have " + Build.VERSION.SDK_INT);
+            return false;
+        }
         if (target == null || !target.isValid()) {
             XposedBridge.log(TAG + "target surface invalid, not opening writer");
             return false;
