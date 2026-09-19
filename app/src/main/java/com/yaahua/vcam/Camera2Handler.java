@@ -7,6 +7,7 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.os.Build;
 import android.os.Environment;
 import android.os.Handler;
+import android.media.ImageReader;
 import android.view.Surface;
 import android.widget.Toast;
 
@@ -237,6 +238,23 @@ public class Camera2Handler {
                     } catch (Exception e) {
                         XposedBridge.log("【VCAM】[toast]" + e.toString());
                     }
+                }
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                // Associate the reader's own Surface with its real format, so each capture target
+                // can be resolved independently instead of relying on the last-writer-wins global.
+                try {
+                    Object reader = param.getResult();
+                    if (reader instanceof ImageReader) {
+                        Surface s = ((ImageReader) reader).getSurface();
+                        ReaderSurfaceInfo.register(s, new ReaderSurfaceInfo(
+                                (int) param.args[0], (int) param.args[1],
+                                (int) param.args[2], (int) param.args[3]));
+                    }
+                } catch (Throwable t) {
+                    XposedBridge.log("【VCAM】[C2][Reader] register failed: " + t);
                 }
             }
         });
