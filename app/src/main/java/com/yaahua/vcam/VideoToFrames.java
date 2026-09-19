@@ -40,6 +40,7 @@ public class VideoToFrames implements Runnable {
     private Throwable throwable;
     private Thread childThread;
     private Surface play_surf;
+    private volatile FrameSink frameSink;
 
     private Callback callback;
 
@@ -50,6 +51,19 @@ public class VideoToFrames implements Runnable {
 
     public void setCallback(Callback callback) {
         this.callback = callback;
+    }
+
+    /**
+     * Receives decoded frames as NV21 byte arrays instead of having them rendered straight into a
+     * consumer Surface. Used for YUV_420_888 ImageReaders (Chromium), which cannot lock the opaque
+     * gralloc buffers a Surface-mode MediaCodec produces.
+     */
+    public interface FrameSink {
+        void onFrame(byte[] nv21, int width, int height);
+    }
+
+    public void setFrameSink(FrameSink sink) {
+        this.frameSink = sink;
     }
 
     public void setEnqueue(LinkedBlockingQueue<byte[]> queue) {
@@ -179,7 +193,9 @@ public class VideoToFrames implements Runnable {
         boolean is_first = false;
         long startWhen = 0;
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        decoder.configure(mediaFormat, play_surf, null, 0);
+        // A frame sink means we need CPU-accessible output, so the decoder must run in
+        // ByteBuffer mode rather than rendering into the consumer Surface.
+        decoder.configure(mediaFormat, frameSink != null ? null : play_surf, null, 0);
         boolean sawInputEOS = false;
         boolean sawOutputEOS = false;
         decoder.start();
@@ -222,7 +238,21 @@ public class VideoToFrames implements Runnable {
                         startWhen = System.currentTimeMillis();
                         is_first = true;
                     }
-                    if (play_surf == null) {
+                    if (frameSink != null) {
+                        Image image = null;
+                        try {
+                            image = decoder.getOutputImage(outputBufferId);
+                            if (image != null) {
+                                Rect crop = image.getCropRect();
+                                byte[] nv21 = getDataFromImage(image, COLOR_FormatNV21);
+                                frameSink.onFrame(nv21, crop.width(), crop.height());
+                            }
+                        } catch (Throwable t) {
+                            XposedBridge.log("【VCAM】[C2][YUV] frame convert failed: " + t);
+                        } finally {
+                            if (image != null) image.close();
+                        }
+                    } else if (play_surf == null) {
                         Image image = decoder.getOutputImage(outputBufferId);
                         ByteBuffer buffer = image.getPlanes()[0].getBuffer();
                         byte[] arr = new byte[buffer.remaining()];
